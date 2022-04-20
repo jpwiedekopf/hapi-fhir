@@ -543,6 +543,33 @@ public abstract class BaseTermReadSvcImpl implements ITermReadSvc {
 		return null;
 	}
 
+	@Override
+	public IBaseResource expandValueSetFromCodeSystem(String theValueSetUri) {
+		List<TermCodeSystemVersion> matchingValueSets = myCodeSystemVersionDao.findByCodeSystemValueset(theValueSetUri);
+		if (matchingValueSets.size() == 0) return null; //nothing was found, continue
+		if (matchingValueSets.size() > 1) {
+			String message = Msg.code(2075) + "More than one CodeSystem resource was found matching the provided implicit ValueSet URI: " +
+				matchingValueSets.stream().map(v -> v.getCodeSystem().getCodeSystemUri()).sorted().collect(Collectors.joining("; "));
+			throw new UnprocessableEntityException(message);
+		}
+		// we have exactly one CS
+		TermCodeSystem ourCodeSystem = matchingValueSets.get(0).getCodeSystem();
+		Collection<TermConcept> ourConcepts = matchingValueSets.get(0).getConcepts();
+		ValueSet toReturn = new ValueSet();
+		toReturn.setUrl(theValueSetUri);
+		toReturn.getCompose().addInclude()
+			.setSystem(ourCodeSystem.getCodeSystemUri())
+			.setVersion(ourCodeSystem.getCurrentVersion().getCodeSystemVersionId());
+
+		for (TermConcept ourConcept : ourConcepts) {
+			toReturn.getExpansion().addContains()
+				.setSystem(ourCodeSystem.getCodeSystemUri())
+				.setCode(ourConcept.getCode())
+				.setDisplay(ourConcept.getDisplay());
+		}
+		return toReturn;
+	}
+
 	@Nonnull
 	private String toHumanReadableExpansionTimestamp(TermValueSet termValueSet) {
 		String expansionTimestamp = "(unknown)";
@@ -615,7 +642,8 @@ public abstract class BaseTermReadSvcImpl implements ITermReadSvc {
 
 			//-- this is quick solution, may need to revisit
 			if (!applyFilter(display, filterDisplayValue)) {
-				continue;}
+				continue;
+			}
 
 			Long conceptPid = conceptView.getConceptPid();
 			if (!pidToConcept.containsKey(conceptPid)) {
@@ -1070,13 +1098,15 @@ public abstract class BaseTermReadSvcImpl implements ITermReadSvc {
 	 * Helper method which builds a predicate for the expansion
 	 */
 	private Optional<PredicateFinalStep> buildExpansionPredicate(List<String> theCodes, SearchPredicateFactory thePredicate) {
-		if (CollectionUtils.isEmpty(theCodes)) { return  Optional.empty(); }
+		if (CollectionUtils.isEmpty(theCodes)) {
+			return Optional.empty();
+		}
 
 		if (theCodes.size() < BooleanQuery.getMaxClauseCount()) {
 			return Optional.of(thePredicate.simpleQueryString()
-				.field( "myCode" ).matching( String.join(" | ", theCodes)) );
+				.field("myCode").matching(String.join(" | ", theCodes)));
 		}
-		
+
 		// Number of codes is larger than maxClauseCount, so we split the query in several clauses
 
 		// partition codes in lists of BooleanQuery.getMaxClauseCount() size
@@ -1167,7 +1197,7 @@ public abstract class BaseTermReadSvcImpl implements ITermReadSvc {
 	}
 
 	private void handleFilterPropertyDefault(SearchPredicateFactory theF,
-			BooleanPredicateClausesStep<?> theB, ValueSet.ConceptSetFilterComponent theFilter) {
+														  BooleanPredicateClausesStep<?> theB, ValueSet.ConceptSetFilterComponent theFilter) {
 
 		theB.must(getPropertyNameValueNestedPredicate(theF, theFilter.getProperty(), theFilter.getValue()));
 	}
@@ -1197,7 +1227,7 @@ public abstract class BaseTermReadSvcImpl implements ITermReadSvc {
 				"myProperties", "myKey", theFilter.getProperty(),
 				"myValueString", value);
 
-			JsonObject nestedQueryJO =  nestedQueryBuildUtil.toGson();
+			JsonObject nestedQueryJO = nestedQueryBuildUtil.toGson();
 
 			ourLog.debug("Build nested Elasticsearch query: {}", nestedQueryJO);
 			theB.must(theF.extension(ElasticsearchExtension.get()).fromJson(nestedQueryJO));
@@ -1240,14 +1270,14 @@ public abstract class BaseTermReadSvcImpl implements ITermReadSvc {
 	}
 
 	private void addFilterLoincCopyrightLoinc(SearchPredicateFactory theF,
-				BooleanPredicateClausesStep<?> theB, ValueSet.ConceptSetFilterComponent theFilter) {
+															BooleanPredicateClausesStep<?> theB, ValueSet.ConceptSetFilterComponent theFilter) {
 
 		theB.mustNot(theF.match().field(IDX_PROP_KEY).matching("EXTERNAL_COPYRIGHT_NOTICE"));
 	}
 
 
 	private void addFilterLoincCopyright3rdParty(SearchPredicateFactory thePredicateFactory,
-				BooleanPredicateClausesStep<?> theBooleanClause, ValueSet.ConceptSetFilterComponent theFilter) {
+																BooleanPredicateClausesStep<?> theBooleanClause, ValueSet.ConceptSetFilterComponent theFilter) {
 		//TODO GGG HS These used to be Term term = new Term(TermConceptPropertyBinder.CONCEPT_FIELD_PROPERTY_PREFIX + "EXTERNAL_COPYRIGHT_NOTICE", ".*");, which was lucene-specific.
 		//TODO GGG HS ask diederik if this is equivalent.
 		//This old .* regex is the same as an existence check on a field, which I've implemented here.
@@ -1321,6 +1351,7 @@ public abstract class BaseTermReadSvcImpl implements ITermReadSvc {
 	/**
 	 * A nested predicate is required for both predicates to be applied to same property, otherwise if properties
 	 * propAA:valueAA and propBB:valueBB are defined, a search for propAA:valueBB would be a match
+	 *
 	 * @see "https://docs.jboss.org/hibernate/search/6.0/reference/en-US/html_single/#search-dsl-predicate-nested"
 	 */
 	private PredicateFinalStep getPropertyNameValueNestedPredicate(SearchPredicateFactory f, String theProperty, String theValue) {
@@ -1415,13 +1446,13 @@ public abstract class BaseTermReadSvcImpl implements ITermReadSvc {
 
 
 	private void addLoincFilterDescendantEqual(String theSystem, SearchPredicateFactory f,
-			BooleanPredicateClausesStep<?> b, ValueSet.ConceptSetFilterComponent theFilter) {
+															 BooleanPredicateClausesStep<?> b, ValueSet.ConceptSetFilterComponent theFilter) {
 
 		List<Long> parentPids = getCodeParentPids(theSystem, theFilter.getProperty(), theFilter.getValue());
 		if (parentPids.isEmpty()) {
 			// Can't return empty must, because it wil match according to other predicates.
 			// Some day there will be a 'matchNone' predicate (https://discourse.hibernate.org/t/fail-fast-predicate/6062)
-			b.mustNot( f.matchAll() );
+			b.mustNot(f.matchAll());
 			return;
 		}
 
@@ -1438,7 +1469,7 @@ public abstract class BaseTermReadSvcImpl implements ITermReadSvc {
 	 * representing the codes in theFilter.getValue()
 	 */
 	private void addLoincFilterDescendantIn(String theSystem, SearchPredicateFactory f,
-			BooleanPredicateClausesStep<?> b, ValueSet.ConceptSetFilterComponent theFilter) {
+														 BooleanPredicateClausesStep<?> b, ValueSet.ConceptSetFilterComponent theFilter) {
 
 		String[] values = theFilter.getValue().split(",");
 		if (values.length == 0) {
@@ -1463,7 +1494,7 @@ public abstract class BaseTermReadSvcImpl implements ITermReadSvc {
 
 		String[] parentPids = code.getParentPidsAsString().split(" ");
 		List<Long> retVal = Arrays.stream(parentPids)
-			.filter( pid -> !StringUtils.equals(pid, "NONE") )
+			.filter(pid -> !StringUtils.equals(pid, "NONE"))
 			.map(Long::parseLong)
 			.collect(Collectors.toList());
 		logFilteringValueOnProperty(theValue, theProperty);
@@ -1485,7 +1516,7 @@ public abstract class BaseTermReadSvcImpl implements ITermReadSvc {
 
 		List<Long> retVal = termConcepts.stream()
 			.flatMap(tc -> Arrays.stream(tc.getParentPidsAsString().split(" ")))
-			.filter( pid -> !StringUtils.equals(pid, "NONE") )
+			.filter(pid -> !StringUtils.equals(pid, "NONE"))
 			.map(Long::parseLong)
 			.collect(Collectors.toList());
 
@@ -1503,13 +1534,13 @@ public abstract class BaseTermReadSvcImpl implements ITermReadSvc {
 			return "Invalid filter criteria - More TermConcepts were found than indicated codes. Queried codes: [" +
 				join(",", theValues + "]; Obtained TermConcept IDs, codes: [" +
 					theTermConcepts.stream().map(tc -> tc.getId() + ", " + tc.getCode())
-						.collect(joining("; "))+ "]");
+						.collect(joining("; ")) + "]");
 		}
 
 		// case: less TermConcept(s) retrieved than codes queried
 		Set<String> matchedCodes = theTermConcepts.stream().map(TermConcept::getCode).collect(toSet());
 		List<String> notMatchedValues = theValues.stream()
-			.filter(v -> ! matchedCodes.contains (v)) .collect(toList());
+			.filter(v -> !matchedCodes.contains(v)).collect(toList());
 
 		return "Invalid filter criteria - No TermConcept(s) were found for the requested codes: [" +
 			join(",", notMatchedValues + "]");
@@ -1575,7 +1606,7 @@ public abstract class BaseTermReadSvcImpl implements ITermReadSvc {
 			Collection<TermConceptDesignation> designations = next
 				.getDesignation()
 				.stream()
-				.map(t->new TermConceptDesignation()
+				.map(t -> new TermConceptDesignation()
 					.setValue(t.getValue())
 					.setLanguage(t.getLanguage())
 					.setUseCode(t.getUse().getCode())
@@ -1717,7 +1748,7 @@ public abstract class BaseTermReadSvcImpl implements ITermReadSvc {
 				.setCodeSystemVersion(concepts.get(0).getSystemVersion())
 				.setMessage(msg);
 		}
-		
+
 		// Ok, we failed
 		List<TermValueSetConcept> outcome = myValueSetConceptDao.findByTermValueSetIdSystemOnly(Pageable.ofSize(1), valueSetEntity.getId(), theSystem);
 		String append;
@@ -1813,7 +1844,9 @@ public abstract class BaseTermReadSvcImpl implements ITermReadSvc {
 	@Transactional(propagation = Propagation.MANDATORY)
 	public List<TermConcept> findCodes(String theCodeSystem, List<String> theCodeList) {
 		TermCodeSystemVersion csv = getCurrentCodeSystemVersion(theCodeSystem);
-		if (csv == null) { return Collections.emptyList(); }
+		if (csv == null) {
+			return Collections.emptyList();
+		}
 
 		return myConceptDao.findByCodeSystemAndCodeList(csv, theCodeList);
 	}
@@ -2707,14 +2740,14 @@ public abstract class BaseTermReadSvcImpl implements ITermReadSvc {
 		try {
 			SearchSession searchSession = getSearchSession();
 			searchSession
-				.massIndexer( TermConcept.class )
-				.dropAndCreateSchemaOnStart( true )
-				.purgeAllOnStart( false )
-				.batchSizeToLoadObjects( 100 )
-				.cacheMode( CacheMode.IGNORE )
-				.threadsToLoadObjects( 6 )
-				.transactionTimeout( 60 * SECONDS_IN_MINUTE )
-				.monitor( new LoggingMassIndexingMonitor(INDEXED_ROOTS_LOGGING_COUNT) )
+				.massIndexer(TermConcept.class)
+				.dropAndCreateSchemaOnStart(true)
+				.purgeAllOnStart(false)
+				.batchSizeToLoadObjects(100)
+				.cacheMode(CacheMode.IGNORE)
+				.threadsToLoadObjects(6)
+				.transactionTimeout(60 * SECONDS_IN_MINUTE)
+				.monitor(new LoggingMassIndexingMonitor(INDEXED_ROOTS_LOGGING_COUNT))
 				.startAndWait();
 
 		} finally {
@@ -2736,7 +2769,7 @@ public abstract class BaseTermReadSvcImpl implements ITermReadSvc {
 		IConnectionPoolInfoProvider connectionPoolInfoProvider =
 			new ConnectionPoolInfoProvider(myHibernatePropertiesProvider.getDataSource());
 		Optional<Integer> maxConnectionsOpt = connectionPoolInfoProvider.getTotalConnectionSize();
-		if ( ! maxConnectionsOpt.isPresent() ) {
+		if (!maxConnectionsOpt.isPresent()) {
 			return DEFAULT_MASS_INDEXER_OBJECT_LOADING_THREADS;
 		}
 
@@ -2751,7 +2784,7 @@ public abstract class BaseTermReadSvcImpl implements ITermReadSvc {
 
 	@VisibleForTesting
 	SearchSession getSearchSession() {
-		return Search.session( myEntityManager );
+		return Search.session(myEntityManager);
 	}
 
 
